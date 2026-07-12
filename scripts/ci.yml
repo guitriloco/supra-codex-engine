@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-core:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: core
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          libcurl4-openssl-dev \
+          libssl-dev \
+          libspdlog-dev \
+          nlohmann-json3-dev \
+          libgtest-dev
+
+    - name: Configure
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
+
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+
+    - name: Test
+      run: cd build && ctest --output-on-failure
+
+  test-python-bindings:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: bindings/python
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install -e .
+        pip install pytest
+
+    - name: Run tests
+      run: pytest tests/
+
+  test-xerebro:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: xerebro
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Run tests
+      run: python -m pytest tests/ -v

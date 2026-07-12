@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package suprax;
+
+option go_package = "github.com/supra-codex/proto";
+option java_package = "com.supracodex.proto";
+
+// ============================================================================
+// Core Node Messages
+// ============================================================================
+
+// A task to be executed on a distributed node
+message TaskMessage {
+    string task_id = 1;
+    string type = 2;         // scrape, enrich, transform, custom
+    string target = 3;       // URL, file path, or target identifier
+    string payload = 4;      // JSON or raw input data
+    int32 priority = 5;
+    int32 max_retries = 6;
+    int32 timeout_seconds = 7;
+    int64 created_at = 8;    // Unix timestamp (milliseconds)
+}
+
+// Result of a completed task
+message TaskResultMessage {
+    string task_id = 1;
+    bool success = 2;
+    string data = 3;
+    double execution_time_ms = 4;
+    string error_message = 5;
+    int32 exit_code = 6;
+    int64 completed_at = 7;
+}
+
+// ============================================================================
+// Node Management
+// ============================================================================
+
+message NodeHeartbeat {
+    string node_id = 1;
+    string hostname = 2;
+    double cpu_percent = 3;
+    double memory_mb = 4;
+    int32 active_tasks = 5;
+    int32 queue_depth = 6;
+    int64 timestamp = 7;
+    repeated string capabilities = 8;  // scrape, enrich, etc.
+}
+
+message NodeRegistration {
+    string node_id = 1;
+    string hostname = 2;
+    int32 port = 3;
+    string version = 4;
+    repeated string capabilities = 5;
+    string public_key = 6;
+}
+
+message NodeRegistrationResponse {
+    bool accepted = 1;
+    string message = 2;
+    string assigned_role = 3;
+}
+
+// ============================================================================
+// Services
+// ============================================================================
+
+service NodeService {
+    rpc Register(NodeRegistration) returns (NodeRegistrationResponse);
+    rpc Heartbeat(NodeHeartbeat) returns (NodeHeartbeat);
+    rpc SubmitTask(TaskMessage) returns (TaskResultMessage);
+    rpc StreamResults(TaskMessage) returns (stream TaskResultMessage);
+}
+
+service OrchestratorService {
+    rpc AssignTask(TaskMessage) returns (TaskMessage);
+    rpc ReportResult(TaskResultMessage) returns (TaskResultMessage);
+}
