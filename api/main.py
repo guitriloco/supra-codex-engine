@@ -702,6 +702,174 @@ async def dashboard_get_node(name: str):
 
 
 # ============================================================================
+# Routes — Nectar Marketplace
+# ============================================================================
+
+# In-memory marketplace store
+MARKETPLACE_MODULES = [
+    {
+        "id": "mod-ecom-price-mon",
+        "name": "E-commerce Price Monitor",
+        "description": "Track competitor pricing across Amazon, Walmart, Shopify and 20+ retailers. Get alerts on price drops and MAP violations.",
+        "author": "Supra-Codex",
+        "rating": 4.8,
+        "downloads": 1240,
+        "price": 0,
+        "price_label": "Free",
+        "category": "Scraping",
+        "version": "1.2.0",
+        "install_count": 1240,
+        "features": ["Multi-retailer scraping", "Price history tracking", "MAP violation alerts", "CSV/API export"],
+        "requirements": ["WraithEngine >= 0.1.0", "Python >= 3.9"],
+    },
+    {
+        "id": "mod-lead-gen-pro",
+        "name": "Lead Gen Prospector",
+        "description": "Extract and enrich B2B leads from LinkedIn, Crunchbase, and AngelList. Includes company enrichment and contact finding.",
+        "author": "DataFlow Labs",
+        "rating": 4.6,
+        "downloads": 873,
+        "price": 29,
+        "price_label": "$29",
+        "category": "Leads",
+        "version": "2.0.1",
+        "install_count": 873,
+        "features": ["LinkedIn profile extraction", "Company enrichment", "Contact email finder", "CRM export"],
+        "requirements": ["WraithEngine >= 0.1.0", "Xerebro AI >= 0.1.0"],
+    },
+    {
+        "id": "mod-competitive-intel",
+        "name": "Competitive Intel Scanner",
+        "description": "Monitor competitor websites, pricing pages, job postings, and product launches. Get weekly digests of competitive moves.",
+        "author": "IntelStack",
+        "rating": 4.5,
+        "downloads": 654,
+        "price": 19,
+        "price_label": "$19",
+        "category": "Analysis",
+        "version": "1.5.0",
+        "install_count": 654,
+        "features": ["Website change detection", "Job posting monitoring", "Product launch alerts", "Weekly digests"],
+        "requirements": ["WraithEngine >= 0.1.0"],
+    },
+    {
+        "id": "mod-social-sentiment",
+        "name": "Social Sentiment Analyzer",
+        "description": "Analyze social media sentiment for brands, products, or trends. Supports Twitter/X, Reddit, and news sources with AI-powered classification.",
+        "author": "TrendViz",
+        "rating": 4.3,
+        "downloads": 421,
+        "price": 39,
+        "price_label": "$39",
+        "category": "Analysis",
+        "version": "1.0.0",
+        "install_count": 421,
+        "features": ["Multi-platform monitoring", "AI sentiment classification", "Trend detection", "Dashboard widgets"],
+        "requirements": ["WraithEngine >= 0.1.0", "Xerebro AI >= 0.1.0"],
+    },
+]
+
+# In-memory installed modules store
+INSTALLED_MODULES: Dict[str, List[str]] = {
+    "default": ["mod-ecom-price-mon"],
+}
+
+
+class MarketplaceModuleOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    author: str
+    rating: float
+    downloads: int
+    price: int
+    price_label: str
+    category: str
+    version: str
+    install_count: int
+    features: list[str]
+    requirements: list[str]
+    installed: bool = False
+
+
+@app.get("/api/marketplace/modules", tags=["marketplace"])
+async def marketplace_list_modules():
+    """List all modules available in the Nectar Marketplace."""
+    installed = INSTALLED_MODULES.get("default", [])
+    modules = []
+    for mod in MARKETPLACE_MODULES:
+        modules.append(MarketplaceModuleOut(
+            **{k: v for k, v in mod.items() if k != "installed"},
+            installed=mod["id"] in installed,
+        ))
+    return modules
+
+
+@app.get("/api/marketplace/modules/{module_id}", tags=["marketplace"])
+async def marketplace_get_module(module_id: str):
+    """Get detailed information about a specific marketplace module."""
+    for mod in MARKETPLACE_MODULES:
+        if mod["id"] == module_id:
+            installed = INSTALLED_MODULES.get("default", [])
+            return MarketplaceModuleOut(
+                **{k: v for k, v in mod.items() if k != "installed"},
+                installed=module_id in installed,
+            )
+    raise HTTPException(status_code=404, detail=f"Module '{module_id}' not found")
+
+
+class InstallRequest(BaseModel):
+    module_id: str
+
+
+@app.post("/api/marketplace/modules/{module_id}/install", tags=["marketplace"])
+async def marketplace_install_module(module_id: str):
+    """Install a module from the marketplace."""
+    # Verify module exists
+    found = None
+    for mod in MARKETPLACE_MODULES:
+        if mod["id"] == module_id:
+            found = mod
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Module '{module_id}' not found")
+
+    # Add to installed
+    if "default" not in INSTALLED_MODULES:
+        INSTALLED_MODULES["default"] = []
+    if module_id not in INSTALLED_MODULES["default"]:
+        INSTALLED_MODULES["default"].append(module_id)
+        # Increment install count
+        found["install_count"] += 1
+        found["downloads"] += 1
+
+    return {"message": f"Module '{found['name']}' installed successfully", "module_id": module_id}
+
+
+@app.post("/api/marketplace/modules/{module_id}/uninstall", tags=["marketplace"])
+async def marketplace_uninstall_module(module_id: str):
+    """Uninstall a module."""
+    installed = INSTALLED_MODULES.get("default", [])
+    if module_id in installed:
+        INSTALLED_MODULES["default"] = [m for m in installed if m != module_id]
+    return {"message": "Module uninstalled", "module_id": module_id}
+
+
+@app.get("/api/marketplace/installed", tags=["marketplace"])
+async def marketplace_list_installed():
+    """List all installed modules with full details."""
+    installed_ids = INSTALLED_MODULES.get("default", [])
+    modules = []
+    for mod in MARKETPLACE_MODULES:
+        if mod["id"] in installed_ids:
+            modules.append(MarketplaceModuleOut(
+                **{k: v for k, v in mod.items() if k != "installed"},
+                installed=True,
+            ))
+    return modules
+
+
+# ============================================================================
 # Routes — /api/v1/ Pipelines (versioned, full config)
 # ============================================================================
 

@@ -25,6 +25,23 @@ export interface PipelineRunResult {
   createdAt: string
 }
 
+export interface MarketplaceModule {
+  id: string
+  name: string
+  description: string
+  author: string
+  rating: number
+  downloads: number
+  price: number
+  price_label: string
+  category: string
+  version: string
+  install_count: number
+  features: string[]
+  requirements: string[]
+  installed: boolean
+}
+
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -99,4 +116,33 @@ export async function pausePipeline(id: string): Promise<void> {
 /** Resume a paused pipeline */
 export async function resumePipeline(id: string): Promise<void> {
   await request(`/api/pipelines/${id}/resume`, { method: 'POST' })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Marketplace
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** List all available marketplace modules */
+export async function listMarketplaceModules(): Promise<MarketplaceModule[]> {
+  return request<MarketplaceModule[]>('/api/marketplace/modules')
+}
+
+/** Get details for a specific marketplace module */
+export async function getMarketplaceModule(id: string): Promise<MarketplaceModule> {
+  return request<MarketplaceModule>(`/api/marketplace/modules/${id}`)
+}
+
+/** Install a marketplace module */
+export async function installModule(moduleId: string): Promise<{ message: string; module_id: string }> {
+  return request(`/api/marketplace/modules/${moduleId}/install`, { method: 'POST' })
+}
+
+/** Uninstall a marketplace module */
+export async function uninstallModule(moduleId: string): Promise<{ message: string; module_id: string }> {
+  return request(`/api/marketplace/modules/${moduleId}/uninstall`, { method: 'POST' })
+}
+
+/** List all installed modules */
+export async function listInstalledModules(): Promise<MarketplaceModule[]> {
+  return request<MarketplaceModule[]>('/api/marketplace/installed')
 }
