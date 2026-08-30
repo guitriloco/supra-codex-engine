@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -115,6 +116,56 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
+
+
+# ============================================================================
+# Distributed Node Registry
+# ============================================================================
+
+# node_id → {hostname, capabilities, cpu, ram, region, status, last_heartbeat, tasks}
+node_registry: Dict[str, Dict[str, Any]] = {}
+
+# Pending dispatch tasks: task_id → {url, node_id, status, result, event}
+pending_dispatch: Dict[str, Dict[str, Any]] = {}
+
+# Round-robin counter for node dispatch
+_round_robin_idx = 0
+_round_robin_lock = threading.Lock()
+
+# Heartbeat timeout (seconds)
+HEARTBEAT_TIMEOUT = 30
+
+
+def _get_online_nodes() -> List[Dict[str, Any]]:
+    """Return all currently online nodes."""
+    return [
+        n for nid, n in node_registry.items()
+        if n.get("status") == "online"
+    ]
+
+
+def _round_robin_node() -> Optional[Dict[str, Any]]:
+    """Select next available online node using round-robin."""
+    global _round_robin_idx
+    online = _get_online_nodes()
+    if not online:
+        return None
+    with _round_robin_lock:
+        idx = _round_robin_idx % len(online)
+        _round_robin_idx += 1
+    return online[idx]
+
+
+async def _stale_node_cleanup_loop():
+    """Background task: mark nodes offline if no heartbeat within HEARTBEAT_TIMEOUT seconds."""
+    while True:
+        await asyncio.sleep(5)
+        now = time.time()
+        for nid, node in list(node_registry.items()):
+            last_hb = node.get("last_heartbeat", 0)
+            if node.get("status") == "online" and (now - last_hb) > HEARTBEAT_TIMEOUT:
+                node["status"] = "offline"
+                logger.warning("Node %s marked offline — heartbeat timeout (%.0fs)", nid, now - last_hb)
 
 
 # ============================================================================
@@ -220,6 +271,42 @@ class DashboardNode(BaseModel):
     tasks: int
 
 
+# ── Node protocol models ──
+
+class RegisterNodeRequest(BaseModel):
+    hostname: str = Field(..., description="Human-readable node name")
+    capabilities: List[str] = Field(default_factory=list, description="Supported task types: scrape, enrich, transform")
+    cpu: float = Field(0.0, description="CPU usage percentage")
+    ram: float = Field(0.0, description="RAM usage in MB")
+    region: str = Field("unknown", description="Geographic region")
+    port: int = Field(0, description="Port the node simulator listens on (for result callbacks)")
+
+
+class NodeInfo(BaseModel):
+    id: str
+    hostname: str
+    capabilities: List[str]
+    cpu: float
+    ram: float
+    region: str
+    status: str
+    last_heartbeat: str
+    task_count: int
+
+
+class HeartbeatRequest(BaseModel):
+    cpu: Optional[float] = None
+    ram: Optional[float] = None
+    task_count: Optional[int] = None
+
+
+class DispatchTaskResult(BaseModel):
+    task_id: str
+    status: str  # 'success' | 'failed'
+    scraped_data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
 class DashboardPipeline(BaseModel):
     id: str
     name: str
@@ -244,6 +331,10 @@ async def startup():
     # Check Xerebro/Ollama availability
     xerebro_ok = XEREBRO_BRAIN.check_sync()
     logger.info("Xerebro AI (Ollama) available: %s", xerebro_ok)
+
+    # Start stale-node cleanup loop
+    asyncio.create_task(_stale_node_cleanup_loop())
+    logger.info("Node heartbeat monitor started (timeout: %ds)", HEARTBEAT_TIMEOUT)
 
 
 @app.on_event("shutdown")
@@ -379,16 +470,19 @@ async def websocket_pipelines(ws: WebSocket):
 # ============================================================================
 
 
-async def _run_pipeline_internal(url: str, pipeline_id: str) -> Dict[str, Any]:
+async def _run_pipeline_internal(url: str, pipeline_id: str, dispatch_timeout: float = 30.0) -> Dict[str, Any]:
     """
     Internal pipeline execution — runs the scrape + analysis steps
     and broadcasts events over WebSocket.
+
+    If online worker nodes are available, the scrape step is dispatched
+    to a round-robin selected node. Otherwise falls back to local execution.
     """
     steps: list[Dict[str, Any]] = []
     overall_start = time.time()
 
     # ------------------------------------------------------------------
-    # Step 1: Scrape
+    # Step 1: Scrape (local or dispatched)
     # ------------------------------------------------------------------
     step1_start = time.time()
     logger.info("Pipeline %s: scraping URL %s", pipeline_id, url)
@@ -396,12 +490,77 @@ async def _run_pipeline_internal(url: str, pipeline_id: str) -> Dict[str, Any]:
     if not WRAITH_ENGINE.is_running():
         WRAITH_ENGINE.start()
 
-    await ws_manager.broadcast_pipeline_event(
-        "task_update", pipeline_id,
-        {"step": "scrape", "status": "running", "url": url},
-    )
+    # Check for available worker nodes for distributed dispatch
+    node = _round_robin_node()
+    scrape_result = None
 
-    scrape_result = WRAITH_ENGINE.scrape(url, timeout_seconds=30)
+    if node:
+        # ── Dispatch to worker node ──
+        node_id = node["hostname"]
+        dispatch_task_id = str(uuid.uuid4())
+
+        logger.info("Pipeline %s: dispatching scrape to node '%s' (task %s)", pipeline_id, node_id, dispatch_task_id)
+
+        await ws_manager.broadcast_pipeline_event(
+            "task_update", pipeline_id,
+            {"step": "scrape", "status": "dispatched", "url": url, "node": node_id},
+        )
+
+        # Create dispatch task with an asyncio.Event for synchronization
+        result_event = asyncio.Event()
+        pending_dispatch[dispatch_task_id] = {
+            "url": url,
+            "node_id": node_id,
+            "status": "assigned",
+            "result": None,
+            "event": result_event,
+            "pipeline_id": pipeline_id,
+        }
+
+        # Increment node task count
+        node["task_count"] = node.get("task_count", 0) + 1
+
+        # Wait for node to complete (with timeout)
+        try:
+            await asyncio.wait_for(result_event.wait(), timeout=dispatch_timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Pipeline %s: dispatch to node '%s' timed out after %.0fs", pipeline_id, node_id, dispatch_timeout)
+            # Fall through — scrape_result stays None, we report failure
+        else:
+            task_data = pending_dispatch.pop(dispatch_task_id, None)
+            if task_data and task_data.get("result"):
+                node_result = task_data["result"]
+                if node_result.get("status") == "success" and node_result.get("scraped_data"):
+                    # Wrap node result to match WraithEngine scrape result shape
+                    node_data = node_result["scraped_data"]
+                    # Build a mock TaskResult-like object
+                    class NodeScrapeResult:
+                        success = True
+                        data = json.dumps(node_data)
+                        error_message = None
+                    scrape_result = NodeScrapeResult()
+                    logger.info("Pipeline %s: node '%s' scrape succeeded", pipeline_id, node_id)
+
+        # Cleanup if still present (timeout or error)
+        pending_dispatch.pop(dispatch_task_id, None)
+
+    # Fall back to local execution if no nodes available or dispatch failed
+    if scrape_result is None and not node:
+        logger.info("Pipeline %s: no nodes available, scraping locally", pipeline_id)
+        await ws_manager.broadcast_pipeline_event(
+            "task_update", pipeline_id,
+            {"step": "scrape", "status": "running", "url": url, "node": "local"},
+        )
+        scrape_result = WRAITH_ENGINE.scrape(url, timeout_seconds=30)
+    elif scrape_result is None and node:
+        # Dispatch was attempted but failed — log and fall back to local
+        logger.info("Pipeline %s: node dispatch failed, falling back to local scrape", pipeline_id)
+        await ws_manager.broadcast_pipeline_event(
+            "task_update", pipeline_id,
+            {"step": "scrape", "status": "running", "url": url, "node": "local-fallback"},
+        )
+        scrape_result = WRAITH_ENGINE.scrape(url, timeout_seconds=30)
+
     step1_duration = (time.time() - step1_start) * 1000
 
     if not scrape_result.success:
@@ -680,25 +839,175 @@ async def dashboard_resume_pipeline(pipeline_id: str):
 
 @app.get("/api/nodes", tags=["dashboard"])
 async def dashboard_list_nodes():
-    """List all registered compute nodes (mock data for now)."""
-    return [
-        DashboardNode(name="node-alpha-01", region="us-east", status="online",
-                      cpu=23.4, mem=45.2, tasks=3),
-        DashboardNode(name="node-beta-02", region="eu-west", status="online",
-                      cpu=12.1, mem=31.8, tasks=1),
-        DashboardNode(name="node-gamma-03", region="ap-southeast", status="offline",
-                      cpu=0.0, mem=0.0, tasks=0),
-    ]
+    """List all registered compute nodes from the live registry."""
+    nodes = []
+    for nid, node in node_registry.items():
+        nodes.append(DashboardNode(
+            name=nid,
+            region=node.get("region", "unknown"),
+            status=node.get("status", "offline"),
+            cpu=node.get("cpu", 0.0),
+            mem=node.get("ram", 0.0),
+            tasks=node.get("task_count", 0),
+        ))
+    # If no live nodes registered, return empty list (caller handles empty state)
+    return nodes
 
 
 @app.get("/api/nodes/{name}", tags=["dashboard"])
 async def dashboard_get_node(name: str):
     """Get details for a specific compute node."""
-    nodes = await dashboard_list_nodes()
-    for node in nodes:
-        if node.name == name:
-            return node
-    raise HTTPException(status_code=404, detail=f"Node '{name}' not found")
+    node = node_registry.get(name)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node '{name}' not found")
+    return DashboardNode(
+        name=name,
+        region=node.get("region", "unknown"),
+        status=node.get("status", "offline"),
+        cpu=node.get("cpu", 0.0),
+        mem=node.get("ram", 0.0),
+        tasks=node.get("task_count", 0),
+    )
+
+
+# ============================================================================
+# Routes — Distributed Node Protocol
+# ============================================================================
+
+
+@app.post("/api/v1/nodes/register", tags=["nodes"])
+async def register_node(req: RegisterNodeRequest):
+    """Register a new compute node or re-register an existing one.
+
+    Called by worker nodes on startup. Returns a unique node ID.
+    If the hostname is already registered, update the registration.
+    """
+    # Use hostname as node ID for simplicity (can be made more robust with UUID)
+    node_id = req.hostname
+
+    existing = node_registry.get(node_id)
+    is_new = existing is None
+
+    node_registry[node_id] = {
+        "hostname": req.hostname,
+        "capabilities": req.capabilities,
+        "cpu": req.cpu,
+        "ram": req.ram,
+        "region": req.region,
+        "port": req.port,
+        "status": "online",
+        "last_heartbeat": time.time(),
+        "task_count": existing.get("task_count", 0) if existing else 0,
+        "registered_at": existing.get("registered_at", datetime.now(timezone.utc).isoformat()) if existing else datetime.now(timezone.utc).isoformat(),
+    }
+
+    action = "registered" if is_new else "re-registered"
+    logger.info("Node '%s' %s (capabilities=%s, region=%s)", node_id, action, req.capabilities, req.region)
+
+    await ws_manager.broadcast_pipeline_event(
+        "status", "",
+        {"event": f"node_{action}", "node_id": node_id, "hostname": req.hostname},
+    )
+
+    return {
+        "node_id": node_id,
+        "status": "online",
+        "message": f"Node '{node_id}' {action} successfully",
+    }
+
+
+@app.post("/api/v1/nodes/{node_id}/heartbeat", tags=["nodes"])
+async def node_heartbeat(node_id: str, hb: HeartbeatRequest = HeartbeatRequest()):
+    """Receive a heartbeat ping from a registered node.
+
+    Updates CPU/RAM/task count and refreshes the liveness timestamp.
+    Nodes should call this every ~10 seconds.
+    """
+    node = node_registry.get(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not registered. Call /register first.")
+
+    node["last_heartbeat"] = time.time()
+    node["status"] = "online"
+
+    if hb.cpu is not None:
+        node["cpu"] = hb.cpu
+    if hb.ram is not None:
+        node["ram"] = hb.ram
+    if hb.task_count is not None:
+        node["task_count"] = hb.task_count
+
+    return {"node_id": node_id, "status": "online", "ack": True}
+
+
+@app.get("/api/v1/nodes", tags=["nodes"])
+async def list_nodes_v1():
+    """List all registered nodes with full metadata (v1 API)."""
+    nodes = []
+    for nid, node in node_registry.items():
+        last_hb = node.get("last_heartbeat", 0)
+        nodes.append(NodeInfo(
+            id=nid,
+            hostname=node.get("hostname", nid),
+            capabilities=node.get("capabilities", []),
+            cpu=node.get("cpu", 0.0),
+            ram=node.get("ram", 0.0),
+            region=node.get("region", "unknown"),
+            status=node.get("status", "offline"),
+            last_heartbeat=datetime.fromtimestamp(last_hb, tz=timezone.utc).isoformat() if last_hb else "never",
+            task_count=node.get("task_count", 0),
+        ))
+    return {"nodes": nodes, "count": len(nodes), "online": len(_get_online_nodes())}
+
+
+@app.get("/api/v1/nodes/{node_id}/tasks", tags=["nodes"])
+async def node_poll_tasks(node_id: str):
+    """Poll for pending tasks assigned to this node.
+
+    Worker nodes call this to check for new dispatch work.
+    """
+    node = node_registry.get(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found. Register first.")
+
+    # Find pending tasks assigned to this node
+    tasks = []
+    for tid, task in list(pending_dispatch.items()):
+        if task.get("node_id") == node_id and task.get("status") == "assigned":
+            tasks.append({
+                "task_id": tid,
+                "url": task.get("url"),
+                "status": "assigned",
+            })
+
+    return {"node_id": node_id, "tasks": tasks, "count": len(tasks)}
+
+
+@app.post("/api/v1/nodes/{node_id}/tasks/{task_id}/result", tags=["nodes"])
+async def node_submit_task_result(node_id: str, task_id: str, result: DispatchTaskResult):
+    """Worker node submits the result of a dispatched task."""
+    task = pending_dispatch.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found in dispatch queue")
+
+    if task.get("node_id") != node_id:
+        raise HTTPException(status_code=403, detail=f"Task '{task_id}' was assigned to node '{task['node_id']}', not '{node_id}'")
+
+    task["status"] = result.status
+    task["result"] = result.model_dump()
+
+    # Signal the waiting pipeline that the result is ready
+    event = task.get("event")
+    if event:
+        event.set()
+
+    # Update node task count
+    node = node_registry.get(node_id)
+    if node:
+        node["task_count"] = max(0, node.get("task_count", 0) - 1)
+
+    logger.info("Node %s completed task %s: %s", node_id, task_id, result.status)
+    return {"ack": True, "task_id": task_id, "status": result.status}
 
 
 # ============================================================================
@@ -1057,6 +1366,129 @@ async def run_pipeline_v1(req: PipelineRunRequest):
     })
 
     return result
+
+
+# ============================================================================
+# Routes — Xerebro AI Brain Panel (chat + models)
+# ============================================================================
+
+
+class XerebroChatMessage(BaseModel):
+    role: str = Field(..., description="user | assistant")
+    content: str = Field(..., description="Message content")
+
+
+class XerebroChatRequest(BaseModel):
+    prompt: str = Field(..., description="The latest user message")
+    model: Optional[str] = Field(
+        None, description="Ollama model to use (defaults to the configured model)"
+    )
+    system_prompt: Optional[str] = Field(
+        None, description="Override the system prompt for this chat"
+    )
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(1024, ge=1, le=8192)
+    history: List[XerebroChatMessage] = Field(
+        default_factory=list, description="Prior conversation turns (user/assistant)"
+    )
+    context: Optional[Dict[str, Any]] = Field(
+        None, description="Optional structured context (e.g. scraped page content)"
+    )
+
+
+class XerebroChatResponse(BaseModel):
+    success: bool
+    response: str
+    model: str
+    tokens_used: int
+    error: Optional[str] = None
+
+
+def _build_chat_prompt(req: XerebroChatRequest) -> str:
+    """Build a multi-turn chat prompt with optional context."""
+    parts = []
+    for msg in req.history:
+        role = "User" if msg.role == "user" else "Assistant"
+        parts.append(f"{role}:\n{msg.content}")
+    if req.context:
+        parts.append(f"Context:\n{json.dumps(req.context, indent=2, ensure_ascii=False)}")
+    parts.append(f"User:\n{req.prompt}")
+    return "\n\n".join(parts)
+
+
+@app.get("/api/v1/xerebro/models", tags=["xerebro"])
+async def xerebro_list_models():
+    """List the Ollama models available to the local Xerebro brain."""
+    import httpx
+
+    try:
+        with httpx.Client(base_url=XEREBRO_BRAIN.config.ollama_host, timeout=10) as client:
+            resp = client.get("/api/tags")
+            if resp.status_code != 200:
+                return {
+                    "available": False,
+                    "models": [],
+                    "default_model": XEREBRO_BRAIN.config.model,
+                    "error": f"Ollama responded with status {resp.status_code}",
+                }
+            data = resp.json()
+            models = [
+                {
+                    "name": m.get("name", ""),
+                    "size": m.get("size", 0),
+                    "modified_at": m.get("modified_at", ""),
+                }
+                for m in data.get("models", [])
+            ]
+            return {
+                "available": True,
+                "models": models,
+                "default_model": XEREBRO_BRAIN.config.model,
+            }
+    except Exception as e:
+        logger.warning("Xerebro /models failed: %s", e)
+        return {
+            "available": False,
+            "models": [],
+            "default_model": XEREBRO_BRAIN.config.model,
+            "error": str(e),
+        }
+
+
+@app.post("/api/v1/xerebro/chat", response_model=XerebroChatResponse, tags=["xerebro"])
+async def xerebro_chat(req: XerebroChatRequest):
+    """Send a chat message to the local Xerebro AI brain and get a response."""
+    if not XEREBRO_BRAIN.check_sync():
+        return XerebroChatResponse(
+            success=False,
+            response="",
+            model=req.model or XEREBRO_BRAIN.config.model,
+            tokens_used=0,
+            error="Ollama is not available. Install Ollama and run `ollama pull llama3.2`.",
+        )
+
+    model = req.model or XEREBRO_BRAIN.config.model
+    system_prompt = req.system_prompt or XEREBRO_BRAIN.config.system_prompt
+
+    # Use a dedicated brain instance for the requested model + system prompt
+    # so per-chat settings never mutate the global brain.
+    brain = XerebroBrain(XerebroConfig(model=model, system_prompt=system_prompt))
+    chat_prompt = _build_chat_prompt(req)
+
+    result = brain.reason_sync(
+        prompt=chat_prompt,
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+        format="text",
+    )
+
+    return XerebroChatResponse(
+        success=result.success,
+        response=result.content,
+        model=result.model,
+        tokens_used=result.tokens_used,
+        error=result.error,
+    )
 
 
 # ============================================================================
