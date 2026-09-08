@@ -68,3 +68,6 @@ core/build/
 # IDE
 .vscode/
 .idea/
+
+# TS build cache
+*.tsbuildinfo
