@@ -1185,7 +1185,11 @@ async def marketplace_list_installed():
 
 @app.get("/api/v1/pipelines/{pipeline_id}", tags=["pipelines"])
 async def get_pipeline_by_id(pipeline_id: str):
-    """Get the full result of a pipeline run."""
+    """Get a saved pipeline definition, or fall back to a pipeline run result."""
+    # Prefer a saved pipeline definition if present
+    definition = pipeline_definitions.get(pipeline_id)
+    if definition:
+        return definition
     data = pipeline_store.get(pipeline_id)
     if not data:
         raise HTTPException(status_code=404, detail="Pipeline not found")
@@ -1488,6 +1492,249 @@ async def xerebro_chat(req: XerebroChatRequest):
         model=result.model,
         tokens_used=result.tokens_used,
         error=result.error,
+    )
+
+
+# ============================================================================
+# Routes — Visual Pipeline Builder (saved pipeline definitions)
+# ============================================================================
+
+# In-memory store of saved pipeline definitions: id → PipelineDefinition
+pipeline_definitions: Dict[str, Dict[str, Any]] = {}
+
+
+class PipelineStepDef(BaseModel):
+    """A single step in a saved pipeline definition."""
+
+    id: str
+    type: str = Field(..., description="scrape | enrich | filter | transform | export")
+    name: str = ""
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineDefinitionModel(BaseModel):
+    id: Optional[str] = None
+    name: str = Field(..., description="Pipeline name")
+    description: str = Field("", description="Pipeline description")
+    steps: List[PipelineStepDef] = Field(default_factory=list)
+
+
+class PipelineRunStepResult(BaseModel):
+    step_id: str
+    type: str
+    status: str  # success | failed | skipped
+    output: Optional[Any] = None
+    summary: Optional[str] = None
+    error: Optional[str] = None
+
+
+class PipelineRunOut(BaseModel):
+    id: str
+    name: str
+    status: str
+    duration_ms: float
+    steps: List[PipelineRunStepResult]
+    result: Optional[Any] = None
+
+
+@app.post("/api/v1/pipelines", tags=["pipelines"])
+async def save_pipeline_definition(pipeline: PipelineDefinitionModel):
+    """Create a new pipeline definition or save an existing one (by id)."""
+    if not pipeline.steps:
+        raise HTTPException(status_code=400, detail="Pipeline must contain at least one step")
+
+    pid = pipeline.id or str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    existing = pipeline_definitions.get(pid)
+    pipeline_definitions[pid] = {
+        "id": pid,
+        "name": pipeline.name,
+        "description": pipeline.description,
+        "steps": [s.model_dump() for s in pipeline.steps],
+        "created_at": existing.get("created_at", now) if existing else now,
+        "updated_at": now,
+    }
+    return {"id": pid, "message": f"Pipeline '{pipeline.name}' saved", "pipeline": pipeline_definitions[pid]}
+
+
+@app.get("/api/v1/pipelines", tags=["pipelines"])
+async def list_pipeline_definitions():
+    """List all saved pipeline definitions."""
+    pipes = []
+    for pid, data in pipeline_definitions.items():
+        pipes.append({
+            "id": pid,
+            "name": data.get("name", pid),
+            "description": data.get("description", ""),
+            "steps": len(data.get("steps", [])),
+            "types": sorted(set(s.get("type") for s in data.get("steps", []))),
+            "updated_at": data.get("updated_at", ""),
+        })
+    # Sort by most recently updated first
+    pipes.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
+    return pipes
+
+
+@app.delete("/api/v1/pipelines/{pipeline_id}", tags=["pipelines"])
+async def delete_pipeline_definition(pipeline_id: str):
+    """Delete a saved pipeline definition."""
+    if pipeline_id not in pipeline_definitions:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    name = pipeline_definitions[pipeline_id]["name"]
+    del pipeline_definitions[pipeline_id]
+    return {"message": f"Pipeline '{name}' deleted", "id": pipeline_id}
+
+
+def _execute_step(step: PipelineStepDef, data: Dict[str, Any]) -> PipelineRunStepResult:
+    """Execute a single pipeline step against the working dataset."""
+    stype = step.type
+    cfg = step.config or {}
+    summary = ""
+
+    if stype == "scrape":
+        url = cfg.get("url", data.get("url", ""))
+        if not url:
+            return PipelineRunStepResult(
+                step_id=step.id, type=stype, status="failed",
+                output=None, error="Scrape step requires a url",
+            )
+        if not WRAITH_ENGINE.is_running():
+            WRAITH_ENGINE.start()
+        result = WRAITH_ENGINE.scrape(url, timeout_seconds=30)
+        if not result.success:
+            return PipelineRunStepResult(
+                step_id=step.id, type=stype, status="failed",
+                output=None, error=result.error_message or "Scrape failed",
+            )
+        try:
+            scraped = json.loads(result.data)
+        except json.JSONDecodeError:
+            scraped = {"raw": result.data}
+        body = scraped.get("body_text", "")
+        data["url"] = url
+        data["title"] = scraped.get("title", "")
+        data["body_text"] = body
+        data["status_code"] = scraped.get("status_code")
+        summary = f"body: {len(body)} chars | title: {data['title'][:60] if data['title'] else '—'}"
+        return PipelineRunStepResult(
+            step_id=step.id, type=stype, status="success",
+            output={"title": data["title"], "body_length": len(body), "status_code": data.get("status_code")},
+            summary=summary,
+        )
+
+    if stype == "enrich":
+        prompt = cfg.get("prompt", "")
+        if not XEREBRO_BRAIN.is_available:
+            return PipelineRunStepResult(
+                step_id=step.id, type=stype, status="skipped",
+                output=None, summary="Ollama not available — enrichment skipped",
+            )
+        model = cfg.get("model") or XEREBRO_BRAIN.config.model
+        brain = XerebroBrain(XerebroConfig(model=model)) if model != XEREBRO_BRAIN.config.model else XEREBRO_BRAIN
+        context = {
+            "title": data.get("title", ""),
+            "body_text": (data.get("body_text", "") or "")[:10000],
+            "url": data.get("url", ""),
+        }
+        result = brain.reason_sync(
+            prompt=prompt or "Extract the main topic, entities, and a concise summary of this page.",
+            context=context,
+            temperature=cfg.get("temperature", 0.1),
+            max_tokens=cfg.get("max_tokens", 1024),
+            format="json",
+        )
+        if not result.success:
+            return PipelineRunStepResult(
+                step_id=step.id, type=stype, status="failed",
+                output=None, error=result.error or "Enrichment failed",
+            )
+        try:
+            parsed = json.loads(result.content)
+        except (json.JSONDecodeError, TypeError):
+            parsed = {"raw_response": result.content}
+        data["enrichment"] = parsed
+        data["tokens_used"] = data.get("tokens_used", 0) + result.tokens_used
+        summary = f"tokens: {result.tokens_used} | model: {result.model}"
+        return PipelineRunStepResult(
+            step_id=step.id, type=stype, status="success",
+            output=parsed, summary=summary,
+        )
+
+    if stype == "filter":
+        # Simple include/field filter on the text; passthrough by default.
+        field = cfg.get("field", "")
+        contains = cfg.get("contains", "")
+        text = ""
+        if field and field in data:
+            text = str(data[field])
+        elif field == "body_text":
+            text = str(data.get("body_text", ""))
+        else:
+            text = json.dumps({k: v for k, v in data.items() if k != "body_text"})
+        kept = (not contains) or (contains.lower() in text.lower())
+        summary = f"kept={kept} (contains '{contains}')" if contains else "passthrough (no filter)"
+        return PipelineRunStepResult(
+            step_id=step.id, type=stype, status="success",
+            output={"kept": kept, "matched": kept, "filter": contains},
+            summary=summary,
+        )
+
+    if stype == "transform":
+        fmt = cfg.get("format", "json")
+        field = cfg.get("field", "")
+        value = data.get(field) if field else data
+        summary = f"format: {fmt}, field: {field or 'all'}"
+        return PipelineRunStepResult(
+            step_id=step.id, type=stype, status="success",
+            output=value, summary=summary,
+        )
+
+    if stype == "export":
+        fmt = cfg.get("format", "json")
+        try:
+            payload = json.dumps(data, indent=2, ensure_ascii=False)
+        except Exception:
+            payload = str(data)
+        summary = f"{fmt.upper()} export ({len(payload)} bytes)"
+        return PipelineRunStepResult(
+            step_id=step.id, type=stype, status="success",
+            output=payload, summary=summary,
+        )
+
+    return PipelineRunStepResult(
+        step_id=step.id, type=stype, status="skipped",
+        output=None, error=f"Unknown step type '{stype}'",
+    )
+
+
+@app.post("/api/v1/pipelines/{pipeline_id}/run", tags=["pipelines"])
+async def run_pipeline_definition(pipeline_id: str):
+    """Execute a saved pipeline definition end-to-end."""
+    definition = pipeline_definitions.get(pipeline_id)
+    if not definition:
+        raise HTTPException(status_code=404, detail="Pipeline definition not found")
+
+    overall_start = time.time()
+    data: Dict[str, Any] = {"url": ""}
+    step_results: List[PipelineRunStepResult] = []
+
+    for step_dict in definition.get("steps", []):
+        step = PipelineStepDef(**step_dict)
+        result = _execute_step(step, data)
+        step_results.append(result)
+        logger.info("Pipeline def %s step %s (%s): %s", pipeline_id, step.id, step.type, result.status)
+
+    total_duration = (time.time() - overall_start) * 1000
+    # Final result — export payload if present, else the working dataset summary
+    final_output = data
+
+    return PipelineRunOut(
+        id=pipeline_id,
+        name=definition.get("name", pipeline_id),
+        status="success",
+        duration_ms=round(total_duration, 1),
+        steps=step_results,
+        result=final_output,
     )
 
 

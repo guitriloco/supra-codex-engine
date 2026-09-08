@@ -146,3 +146,131 @@ export async function uninstallModule(moduleId: string): Promise<{ message: stri
 export async function listInstalledModules(): Promise<MarketplaceModule[]> {
   return request<MarketplaceModule[]>('/api/marketplace/installed')
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Xerebro AI Brain Panel
+// ──────────────────────────────────────────────────────────────────────────────
+
+export interface XerebroModelInfo {
+  name: string
+  size: number
+  modified_at: string
+}
+
+export interface XerebroModelsResponse {
+  available: boolean
+  models: XerebroModelInfo[]
+  default_model: string
+  error?: string
+}
+
+export interface XerebroChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface XerebroChatRequest {
+  prompt: string
+  model?: string
+  system_prompt?: string
+  temperature?: number
+  max_tokens?: number
+  history?: XerebroChatMessage[]
+  context?: Record<string, unknown>
+}
+
+export interface XerebroChatResponse {
+  success: boolean
+  response: string
+  model: string
+  tokens_used: number
+  error?: string
+}
+
+/** List Ollama models available to the local Xerebro brain */
+export async function listXerebroModels(): Promise<XerebroModelsResponse> {
+  return request<XerebroModelsResponse>('/api/v1/xerebro/models')
+}
+
+/** Send a chat message to the Xerebro brain and get a response */
+export async function xerebroChat(req: XerebroChatRequest): Promise<XerebroChatResponse> {
+  return request<XerebroChatResponse>('/api/v1/xerebro/chat', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Visual Pipeline Builder
+// ──────────────────────────────────────────────────────────────────────────────
+
+export interface PipelineStepDef {
+  id: string
+  type: 'scrape' | 'enrich' | 'filter' | 'transform' | 'export'
+  name: string
+  config: Record<string, any>
+}
+
+export interface PipelineDefinition {
+  id?: string
+  name: string
+  description: string
+  steps: PipelineStepDef[]
+  created_at?: string
+  updated_at?: string
+}
+
+export interface PipelineSummary {
+  id: string
+  name: string
+  description: string
+  steps: number
+  types: string[]
+  updated_at: string
+}
+
+export interface PipelineRunStepResult {
+  step_id: string
+  type: string
+  status: 'success' | 'failed' | 'skipped'
+  output?: any
+  summary?: string
+  error?: string
+}
+
+export interface PipelineRunResult {
+  id: string
+  name: string
+  status: string
+  duration_ms: number
+  steps: PipelineRunStepResult[]
+  result?: any
+}
+
+/** Save (create or update) a pipeline definition */
+export async function savePipelineDefinition(pipeline: PipelineDefinition): Promise<{ id: string; message: string; pipeline: PipelineDefinition }> {
+  return request('/api/v1/pipelines', {
+    method: 'POST',
+    body: JSON.stringify(pipeline),
+  })
+}
+
+/** List saved pipeline definitions */
+export async function listPipelineDefinitions(): Promise<PipelineSummary[]> {
+  return request<PipelineSummary[]>('/api/v1/pipelines')
+}
+
+/** Get a saved pipeline definition by id */
+export async function getPipelineDefinition(id: string): Promise<PipelineDefinition> {
+  return request<PipelineDefinition>(`/api/v1/pipelines/${id}`)
+}
+
+/** Delete a saved pipeline definition */
+export async function deletePipelineDefinition(id: string): Promise<{ message: string; id: string }> {
+  return request(`/api/v1/pipelines/${id}`, { method: 'DELETE' })
+}
+
+/** Execute a saved pipeline definition */
+export async function runPipelineDefinition(id: string): Promise<PipelineRunResult> {
+  return request<PipelineRunResult>(`/api/v1/pipelines/${id}/run`, { method: 'POST' })
+}
