@@ -8,6 +8,9 @@ import Nodes from '@/pages/Nodes'
 import Marketplace from '@/pages/Marketplace'
 import Settings from '@/pages/Settings'
 import LivePipeline from '@/pages/LivePipeline'
+import Pricing from '@/pages/Pricing'
+import Billing from '@/pages/Billing'
+import Xerebro from '@/pages/Xerebro'
 import Login from '@/pages/Login'
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
@@ -75,14 +78,38 @@ export default function App() {
             }
           />
           <Route
-            path="/settings"
+            path="/xerebro"
             element={
               <ProtectedLayout>
-                <Settings />
+                <Xerebro />
               </ProtectedLayout>
             }
           />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route
+                        path="/pricing"
+                        element={
+                          <ProtectedLayout>
+                            <Pricing />
+                          </ProtectedLayout>
+                        }
+                      />
+                      <Route
+                        path="/settings/billing"
+                        element={
+                          <ProtectedLayout>
+                            <Billing />
+                          </ProtectedLayout>
+                        }
+                      />
+                      <Route
+                        path="/settings"
+                        element={
+                          <ProtectedLayout>
+                            <Settings />
+                          </ProtectedLayout>
+                        }
+                      />
+                      <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

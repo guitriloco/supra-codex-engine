@@ -10,7 +10,6 @@ import {
   Check,
   Loader2,
   Package,
-  ExternalLink,
 } from 'lucide-react'
 import {
   listMarketplaceModules,

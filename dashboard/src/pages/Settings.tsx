@@ -1,13 +1,14 @@
 import { Card, CardHeader, CardTitle } from '@/components/Card'
 import { Button } from '@/components/Button'
 import { User, Bell, Key, CreditCard, Palette } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 const sections = [
-  { icon: User, label: 'Profile', description: 'Manage your personal information' },
-  { icon: Bell, label: 'Notifications', description: 'Configure alert preferences' },
-  { icon: Key, label: 'API Keys', description: 'Manage authentication tokens' },
-  { icon: CreditCard, label: 'Billing', description: 'Subscription & payment details' },
-  { icon: Palette, label: 'Appearance', description: 'Theme and display settings' },
+  { icon: User, label: 'Profile', description: 'Manage your personal information', to: '/settings' },
+  { icon: Bell, label: 'Notifications', description: 'Configure alert preferences', to: '/settings' },
+  { icon: Key, label: 'API Keys', description: 'Manage authentication tokens', to: '/settings' },
+  { icon: CreditCard, label: 'Billing', description: 'Subscription & payment details', to: '/settings/billing' },
+  { icon: Palette, label: 'Appearance', description: 'Theme and display settings', to: '/settings' },
 ]
 
 export default function Settings() {
@@ -20,16 +21,18 @@ export default function Settings() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {sections.map((section) => (
-          <Card key={section.label} hover className="flex items-center gap-4 cursor-pointer">
-            <div className="w-10 h-10 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0">
-              <section.icon className="w-5 h-5 text-surface-400" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-sm font-medium text-surface-200">{section.label}</h3>
-              <p className="text-xs text-surface-500">{section.description}</p>
-            </div>
-            <div className="w-2 h-2 border-r-2 border-b-2 border-surface-600 rotate-[-45deg]" />
-          </Card>
+          <Link key={section.label} to={section.to}>
+            <Card hover className="flex items-center gap-4 cursor-pointer">
+              <div className="w-10 h-10 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0">
+                <section.icon className="w-5 h-5 text-surface-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-medium text-surface-200">{section.label}</h3>
+                <p className="text-xs text-surface-500">{section.description}</p>
+              </div>
+              <div className="w-2 h-2 border-r-2 border-b-2 border-surface-600 rotate-[-45deg]" />
+            </Card>
+          </Link>
         ))}
       </div>
 
@@ -56,8 +59,10 @@ export default function Settings() {
           </div>
         </div>
         <div className="mt-4 pt-4 border-t border-surface-800">
-          <Button variant="secondary">Manage Subscription</Button>
-        </div>
+            <Link to="/settings/billing">
+              <Button variant="secondary">Manage Subscription</Button>
+            </Link>
+          </div>
       </Card>
     </div>
   )

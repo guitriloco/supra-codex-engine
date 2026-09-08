@@ -9,21 +9,27 @@ import {
   ChevronRight,
   Hexagon,
   Radio,
+  Tag,
+  CreditCard,
+  Brain,
 } from 'lucide-react'
 import { useState } from 'react'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/pipelines', icon: GitBranch, label: 'Pipelines' },
+  { to: '/xerebro', icon: Brain, label: 'Xerebro Brain' },
 ]
 
 const navSubItems = [
   { to: '/pipelines/live', icon: Radio, label: 'Live View', parent: '/pipelines' },
+  { to: '/settings/billing', icon: CreditCard, label: 'Billing', parent: '/settings' },
 ]
 
 const bottomNavItems = [
   { to: '/nodes', icon: Server, label: 'Nodes' },
   { to: '/marketplace', icon: ShoppingCart, label: 'Marketplace' },
+  { to: '/pricing', icon: Tag, label: 'Pricing' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
