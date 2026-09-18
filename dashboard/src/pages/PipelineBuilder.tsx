@@ -27,7 +27,7 @@ import {
   PipelineStepDef,
   PipelineDefinition,
   PipelineSummary,
-  PipelineRunResult,
+  PipelineDefinitionRunResult,
 } from '@/services/api'
 
 const STEP_TYPES = [
@@ -69,7 +69,7 @@ export default function PipelineBuilder() {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [running, setRunning] = useState(false)
-  const [runResult, setRunResult] = useState<PipelineRunResult | null>(null)
+  const [runResult, setRunResult] = useState<PipelineDefinitionRunResult | null>(null)
   const [showLibrary, setShowLibrary] = useState(false)
   const [toast, setToast] = useState('')
 
@@ -97,14 +97,6 @@ export default function PipelineBuilder() {
       steps: p.steps.map((s) =>
         s.id === id ? { ...s, config: { ...s.config, [key]: value } } : s,
       ),
-    }))
-    setDirty(true)
-  }
-
-  function setStepName(id: string, name: string) {
-    setPipeline((p) => ({
-      ...p,
-      steps: p.steps.map((s) => (s.id === id ? { ...s, name } : s)),
     }))
     setDirty(true)
   }
@@ -476,7 +468,7 @@ export default function PipelineBuilder() {
 
       {/* Run results */}
       {runResult && (
-        <Card className="glow-success" >
+        <Card className="border-success-500/30">
           <div className="flex items-center justify-between border-b border-surface-800 pb-3 mb-3">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-success-400" />

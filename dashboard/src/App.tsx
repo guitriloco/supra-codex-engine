@@ -11,6 +11,7 @@ import LivePipeline from '@/pages/LivePipeline'
 import Pricing from '@/pages/Pricing'
 import Billing from '@/pages/Billing'
 import Xerebro from '@/pages/Xerebro'
+import PipelineBuilder from '@/pages/PipelineBuilder'
 import Login from '@/pages/Login'
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
@@ -50,6 +51,14 @@ export default function App() {
             element={
               <ProtectedLayout>
                 <LivePipeline />
+              </ProtectedLayout>
+            }
+          />
+          <Route
+            path="/pipelines/builder"
+            element={
+              <ProtectedLayout>
+                <PipelineBuilder />
               </ProtectedLayout>
             }
           />

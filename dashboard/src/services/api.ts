@@ -238,7 +238,7 @@ export interface PipelineRunStepResult {
   error?: string
 }
 
-export interface PipelineRunResult {
+export interface PipelineDefinitionRunResult {
   id: string
   name: string
   status: string
@@ -271,6 +271,6 @@ export async function deletePipelineDefinition(id: string): Promise<{ message: s
 }
 
 /** Execute a saved pipeline definition */
-export async function runPipelineDefinition(id: string): Promise<PipelineRunResult> {
-  return request<PipelineRunResult>(`/api/v1/pipelines/${id}/run`, { method: 'POST' })
+export async function runPipelineDefinition(id: string): Promise<PipelineDefinitionRunResult> {
+  return request<PipelineDefinitionRunResult>(`/api/v1/pipelines/${id}/run`, { method: 'POST' })
 }

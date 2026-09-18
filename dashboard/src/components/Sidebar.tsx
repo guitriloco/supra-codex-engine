@@ -23,6 +23,7 @@ const navItems = [
 
 const navSubItems = [
   { to: '/pipelines/live', icon: Radio, label: 'Live View', parent: '/pipelines' },
+  { to: '/pipelines/builder', icon: GitBranch, label: 'Builder', parent: '/pipelines' },
   { to: '/settings/billing', icon: CreditCard, label: 'Billing', parent: '/settings' },
 ]
 
