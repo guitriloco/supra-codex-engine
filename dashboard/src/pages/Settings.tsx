@@ -1,11 +1,13 @@
 import { Card, CardHeader, CardTitle } from '@/components/Card'
 import { Button } from '@/components/Button'
-import { User, Bell, Key, CreditCard, Palette } from 'lucide-react'
+import { NotificationPreferences } from '@/components/NotificationPreferences'
+import { resetOnboarding } from '@/lib/onboarding'
+import { User, Bell, Key, CreditCard, Palette, Compass, RotateCcw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 const sections = [
   { icon: User, label: 'Profile', description: 'Manage your personal information', to: '/settings' },
-  { icon: Bell, label: 'Notifications', description: 'Configure alert preferences', to: '/settings' },
+  { icon: Bell, label: 'Notifications', description: 'Configure alert preferences', to: '/settings#notifications' },
   { icon: Key, label: 'API Keys', description: 'Manage authentication tokens', to: '/settings' },
   { icon: CreditCard, label: 'Billing', description: 'Subscription & payment details', to: '/settings/billing' },
   { icon: Palette, label: 'Appearance', description: 'Theme and display settings', to: '/settings' },
@@ -36,6 +38,9 @@ export default function Settings() {
         ))}
       </div>
 
+      {/* Notification delivery preferences */}
+      <NotificationPreferences />
+
       {/* Subscription info */}
       <Card>
         <CardHeader>
@@ -59,10 +64,28 @@ export default function Settings() {
           </div>
         </div>
         <div className="mt-4 pt-4 border-t border-surface-800">
-            <Link to="/settings/billing">
-              <Button variant="secondary">Manage Subscription</Button>
-            </Link>
+          <Link to="/settings/billing">
+            <Button variant="secondary">Manage Subscription</Button>
+          </Link>
+        </div>
+      </Card>
+
+      {/* Help / onboarding */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Compass className="w-4 h-4 text-surface-400" />
+            <CardTitle>Product Tour</CardTitle>
           </div>
+        </CardHeader>
+        <p className="text-xs text-surface-500 mb-4">
+          Replay the three-step setup tour — adding a node, running a pipeline and browsing the
+          Nectar Marketplace.
+        </p>
+        <Button variant="secondary" size="sm" onClick={resetOnboarding}>
+          <RotateCcw className="w-3.5 h-3.5" />
+          Restart tour
+        </Button>
       </Card>
     </div>
   )

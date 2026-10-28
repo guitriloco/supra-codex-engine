@@ -1,5 +1,6 @@
-import { Bell, Search, User, LogOut } from 'lucide-react'
+import { Search, User, LogOut } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
+import { NotificationBell } from '@/components/NotificationBell'
 import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 
@@ -29,10 +30,7 @@ export function TopBar() {
       {/* Right section */}
       <div className="flex items-center gap-3">
         {/* Notification bell */}
-        <button className="relative p-2 rounded-lg text-surface-500 hover:text-surface-300 hover:bg-surface-800 transition-colors">
-          <Bell className="w-4 h-4" />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-danger-500" />
-        </button>
+        <NotificationBell />
 
         {/* User menu */}
         <div className="relative">
