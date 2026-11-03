@@ -10,10 +10,14 @@ Registered modules can also be consumed by the dashboard / pipeline layer via
 WraithEngine instance.
 """
 
-from .base import ScraperModule, register_modules, MODULE_CLASSES, MODULE_METADATA  # noqa: F401
+from .base import ScraperModule, register_modules, MODULE_CLASSES  # noqa: F401
 from .amazon_tracker import AmazonPriceTracker  # noqa: F401
 from .linkedin_profiler import LinkedInCompanyProfiler  # noqa: F401
 from .seo_scanner import SeoAuditScanner  # noqa: F401
+
+# Build catalog metadata from the auto-registered module classes.
+# Importing the modules above populates MODULE_CLASSES via __init_subclass__.
+MODULE_METADATA = [cls().metadata() for cls in MODULE_CLASSES.values()]
 
 __all__ = [
     "ScraperModule",

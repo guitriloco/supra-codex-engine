@@ -83,26 +83,55 @@ class ScraperModule:
 
     # ── HTTP helpers ─────────────────────────────────────────────────────
 
-    def headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    def headers(self, ua: Optional[str] = None, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build browser-like headers with a rotating User-Agent."""
         hdrs = dict(DEFAULT_HEADERS)
-        hdrs["User-Agent"] = random.choice(USER_AGENTS)
+        hdrs["User-Agent"] = ua or random.choice(USER_AGENTS)
         if extra:
             hdrs.update(extra)
         return hdrs
 
-    def fetch(self, url: str, timeout: float = 30.0, extra_headers: Optional[Dict[str, str]] = None) -> str:
-        """Fetch a URL and return its response body (HTML) as text."""
+    def fetch(
+        self,
+        url: str,
+        timeout: float = 30.0,
+        extra_headers: Optional[Dict[str, str]] = None,
+        retries: int = 2,
+    ) -> str:
+        """
+        Fetch a URL and return its response body (HTML) as text.
+
+        Retries with a fresh rotating User-Agent on 403/429/503 responses —
+        a cheap, effective anti-bot evasion measure.
+        """
         import httpx
 
-        resp = httpx.get(
-            url,
-            headers=self.headers(extra_headers),
-            follow_redirects=True,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        return resp.text
+        last_error: Optional[Exception] = None
+        attempts = max(1, retries + 1)
+        for attempt in range(attempts):
+            try:
+                resp = httpx.get(
+                    url,
+                    headers=self.headers(extra_headers),
+                    follow_redirects=True,
+                    timeout=timeout,
+                )
+                if resp.status_code in (403, 429, 503) and attempt < attempts - 1:
+                    time.sleep(1.0 * (attempt + 1))  # polite backoff
+                    continue
+                resp.raise_for_status()
+                return resp.text
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt < attempts - 1:
+                    time.sleep(1.0 * (attempt + 1))
+        raise last_error or RuntimeError(f"Failed to fetch {url}")
+
+    def __init_subclass__(cls, **kwargs):
+        """Auto-register concrete modules in the shared registry."""
+        super().__init_subclass__(**kwargs)
+        if getattr(cls, "id", None) and cls.id != "base":
+            MODULE_CLASSES[cls.id] = cls
 
     # ── To implement ─────────────────────────────────────────────────────
 
@@ -143,7 +172,9 @@ def _handler_for(module_class: type) -> Any:
     return handler
 
 
-# Registry of concrete module classes, populated by importing subclasses.
+# Registry of concrete module classes. Subclasses register themselves via
+# ScraperModule.__init_subclass__ so the registry stays correct no matter the
+# import order.
 MODULE_CLASSES: Dict[str, type] = {}
 
 
@@ -160,13 +191,3 @@ def register_modules(engine) -> Dict[str, ScraperModule]:
         engine.register_module(module_id, _handler_for(cls))
         instances[module_id] = instance
     return instances
-
-
-def _collect():
-    """Auto-discover module classes that subclass ScraperModule."""
-    for cls in ScraperModule.__subclasses__():
-        if cls.id and cls.id != "base":
-            MODULE_CLASSES[cls.id] = cls
-
-
-_collect()
