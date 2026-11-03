@@ -1,7 +1,10 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/context/AuthContext'
+import { RealtimeProvider } from '@/context/RealtimeContext'
+import { NotificationsProvider } from '@/context/NotificationsContext'
 import { Sidebar } from '@/components/Sidebar'
 import { TopBar } from '@/components/TopBar'
+import { OnboardingWizard } from '@/components/OnboardingWizard'
 import Dashboard from '@/pages/Dashboard'
 import Pipelines from '@/pages/Pipelines'
 import Nodes from '@/pages/Nodes'
@@ -22,21 +25,27 @@ function ProtectedLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar />
-      <div className="flex-1 ml-60">
-        <TopBar />
-        <main className="p-6">{children}</main>
+    <>
+      <div className="flex min-h-screen">
+        <Sidebar />
+        <div className="flex-1 ml-60">
+          <TopBar />
+          <main className="p-6">{children}</main>
+        </div>
       </div>
-    </div>
+      <OnboardingWizard />
+    </>
   )
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <Routes>
+      {/* One shared WebSocket for the whole app: notifications + activity feed */}
+      <RealtimeProvider>
+        <NotificationsProvider>
+          <AuthProvider>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route
             path="/"
@@ -120,7 +129,9 @@ export default function App() {
                       />
                       <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </AuthProvider>
+          </AuthProvider>
+        </NotificationsProvider>
+      </RealtimeProvider>
     </BrowserRouter>
   )
 }
