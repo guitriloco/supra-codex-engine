@@ -48,9 +48,16 @@ COPY --from=builder /install /usr/local
 WORKDIR /app
 COPY api/ ./api/
 COPY xerebro/ ./xerebro/
+COPY modules/ ./modules/
+COPY bindings/ ./bindings/
+
+# The API imports `wraith.engine` (pure-Python reference) and `modules`,
+# so both must be importable from the app root.
+ENV PYTHONPATH=/app:/app/bindings/python
 
 RUN pip3 install -r api/requirements.txt && \
-    pip3 install -r xerebro/requirements.txt
+    pip3 install -r xerebro/requirements.txt && \
+    pip3 install -r modules/requirements.txt
 
 EXPOSE 8000
 
